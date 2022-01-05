@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC demo</title>
+</head>
+<body>
+    <label for="sender_name_input">Sender Name</label>
+    <input id="sender_name_input" type="text" name="sender_name_input">
+    <br><br>
+    <label for="receiver_name_input">Receiver Name</label>
+    <input id="receiver_name_input" type="text" name="receiver_name_input">
+    <br>
+    <br>
+    <button id="register_client_button" onclick="registerClient()">Register client</button>
+    <button id="start_call" onclick="makeCall()">start call</button>
+    
+    <script>
+        var webSocket = new WebSocket("ws://localhost:8080");
+
+        var sender_name_input = document.getElementById("sender_name_input");
+        var receiver_name_input = document.getElementById("receiver_name_input");
+        var textmessage_input = document.getElementById("textmessage_input");
+        var register_client_button = document.getElementById("register_client_button");
+        
+        const configuration = {'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]}
+
+        'use strict';
+
+        let pc;
+
+        webSocket.onopen = () => {
+            console.log("connected to server");
+        }
+
+        webSocket.onmessage = e => {
+            const message = JSON.parse(e.data);
+            switch (message.type) {
+                case 'offer':
+                    handleOffer(message);
+                    break;
+                case 'answer':
+                    handleAnswer(message);
+                    break;
+                case 'candidate':
+                    handleCandidate(message);
+                    break;
+                case 'ready':
+                    // A second tab joined. This tab will initiate a call unless in a call already.
+                    if (pc) {
+                        console.log('already in call, ignoring');
+                        return;
+                    }
+                    makeCall();
+                    break;
+                case 'bye':
+                    if (pc) {
+                        hangup();
+                    }
+                    break;
+                default:
+                    console.log('unhandled', e);
+                    break;
+            }
+        };
+
+        function registerClient() {
+            var message = {
+                id: sender_name_input.value,
+                type: "register",
+            }
+            webSocket.send(JSON.stringify(message));
+            console.log(sender_name_input.value + " registered");
+        }
+
+        function createPeerConnection() {
+            pc = new RTCPeerConnection();
+            pc.onicecandidate = e => {
+                const message = {
+                    id: sender_name_input.value,
+                    dest: receiver_name_input.value,
+                    type: 'candidate',
+                    candidate: null,
+                };
+                if (e.candidate) {
+                    message.candidate = e.candidate.candidate;
+                    message.sdpMid = e.candidate.sdpMid;
+                    message.sdpMLineIndex = e.candidate.sdpMLineIndex;
+                }
+                webSocket.send(JSON.stringify(message));
+                console.log("Ice candidate sent to " + receiver_name_input.value);
+            };
+        }
+
+        async function makeCall() {
+            await createPeerConnection();
+
+            const offer = await pc.createOffer();
+            var message = {
+                id: sender_name_input.value,
+                type: "offer",
+                dest: receiver_name_input.value,
+                offer: offer
+            }
+            webSocket.send(JSON.stringify(message));
+            //webSocket.send(message);
+            console.log("offer sent to " + receiver_name_input.value);
+
+            await pc.setLocalDescription(offer);
+            console.log("set local desc: " + JSON.stringify(offer));
+        }
+
+        async function handleOffer(data) {
+            if (pc) {
+                console.error('existing peerconnection');
+                return;
+            }
+            await createPeerConnection();
+            await pc.setRemoteDescription(data.offer);
+            console.log("set remote desc: " + JSON.stringify(data.offer));
+
+            const answer = await pc.createAnswer();
+            const answerMessage = {
+                id: sender_name_input.value,
+                type: "answer",
+                dest: data.id,
+                answer: answer
+            }
+            //webSocket.send(answerMessage);
+            webSocket.send(JSON.stringify(answerMessage));
+            console.log("answer sent to " + data.id);
+            
+            await pc.setLocalDescription(answer);
+            console.log("set local desc: " + JSON.stringify(answer));
+        }
+
+        async function handleAnswer(data) {
+            if (!pc) {
+                console.error('no peerconnection');
+                return;
+            }
+            await pc.setRemoteDescription(data.answer);
+            console.log("set remote desc: " + JSON.stringify(data.answer));
+            console.log("STATE: " + pc.connectionState)
+        }
+
+        async function handleCandidate(data) {
+            if (!pc) {
+                console.error('no peerconnection');
+                return;
+            }
+            if (!data.candidate.candidate) {
+                await pc.addIceCandidate(null);
+            } else {
+                await pc.addIceCandidate(data.candidate);
+                console.log("received and added new ice candidate")
+            }
+        }
+    </script>
+</body>
+</html>
